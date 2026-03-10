@@ -7,6 +7,11 @@ import { TuiEvent } from "@/cli/cmd/tui/event"
 import { AsyncQueue } from "../../util/queue"
 import { errors } from "../error"
 import { lazy } from "../../util/lazy"
+import { generateText } from "ai"
+import { Provider } from "@/provider/provider"
+import { MessageV2 } from "@/session/message-v2"
+import { Config } from "@/config/config"
+import { Auth } from "@/auth"
 
 const TuiRequest = z.object({
   path: z.string(),
@@ -149,6 +154,97 @@ export const TuiRoutes = lazy(() =>
         } catch (err) {
           const message = err instanceof Error ? err.message : "Plugin execution failed"
           return c.json({ error: message, cancelled: true }, 500)
+        }
+      },
+    )
+    .post(
+      "/optimize-prompt",
+      describeRoute({
+        summary: "Optimize prompt",
+        description: "Use AI to optimize and enhance a user prompt based on conversation context",
+        operationId: "tui.optimizePrompt",
+        responses: {
+          200: {
+            description: "Optimized prompt",
+            content: {
+              "application/json": {
+                schema: resolver(z.object({
+                  original: z.string(),
+                  optimized: z.string(),
+                })),
+              },
+            },
+          },
+          ...errors(400, 500),
+        },
+      }),
+      validator("json", z.object({
+        prompt: z.string(),
+        sessionID: z.string().optional(),
+      })),
+      async (c) => {
+        const { prompt, sessionID } = c.req.valid("json")
+
+        try {
+          // Get small model for optimization
+          const cfg = await Config.get()
+          const providerID = cfg.small_model?.split("/")[0] ?? "anthropic"
+          const model = await Provider.getSmallModel(providerID)
+          if (!model) {
+            return c.json({ error: "No small model available for optimization" }, 500)
+          }
+
+          const language = await Provider.getLanguage(model)
+          const auth = await Auth.get(model.providerID)
+
+          // Build context from session messages if available
+          let contextText = ""
+          if (sessionID) {
+            const messages = await Session.messages({ sessionID, limit: 10 })
+            if (messages.length > 0) {
+              const recentMessages = messages
+                .slice(-5)
+                .map(m => {
+                  const role = m.info.role
+                  const text = m.parts
+                    .filter(p => p.type === "text")
+                    .map(p => p.type === "text" ? p.text : "")
+                    .join("\n")
+                    .slice(0, 500)
+                  return `${role}: ${text}`
+                })
+                .join("\n\n")
+              contextText = `\n\nRecent conversation context:\n${recentMessages}`
+            }
+          }
+
+          const systemPrompt = `You are a prompt optimization assistant. Your task is to improve user prompts to make them more effective, clear, and likely to get helpful responses.
+
+Guidelines for optimization:
+1. Make the prompt more specific and clear
+2. Add relevant context that might be missing
+3. Structure the prompt logically (context → task → requirements)
+4. Keep the original intent intact
+5. Don't add unnecessary complexity
+6. If the prompt is already good, just make minor improvements
+
+Return ONLY the optimized prompt, nothing else. Do not include any explanations or markdown formatting.`
+
+          const result = await generateText({
+            model: language,
+            system: systemPrompt,
+            prompt: `Original prompt:${contextText}\n\n"${prompt}"\n\nOptimize this prompt:`,
+          })
+
+          const optimized = result.text.trim()
+
+          return c.json({
+            original: prompt,
+            optimized,
+          })
+        } catch (err) {
+          const message = err instanceof Error ? err.message : "Failed to optimize prompt"
+          return c.json({ error: message }, 500)
         }
       },
     )
