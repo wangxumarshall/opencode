@@ -34,6 +34,7 @@ import { useToast } from "../../ui/toast"
 import { useKV } from "../../context/kv"
 import { useTextareaKeybindings } from "../textarea-keybindings"
 import { DialogSkill } from "../dialog-skill"
+import { DialogOptimize } from "../../ui/dialog-optimize"
 
 export type PromptProps = {
   sessionID?: string
@@ -470,7 +471,79 @@ export function Prompt(props: PromptProps) {
     )
   }
 
+  const handleOptimize = async (dialogCtx: any) => {
+    if (!store.prompt.input) return
+    const originalPrompt = store.prompt.input
+
+    try {
+      const res = await fetch(`${sdk.url}/tui/ui-interact`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: "prompt-optimize",
+          action: "prompt.optimize",
+          context: {
+            prompt: store.prompt.input,
+            sessionID: props.sessionID,
+          },
+        }),
+      })
+
+      if (!res.ok) {
+        toast.show({
+          variant: "error",
+          message: `Server error: ${res.status}`,
+        })
+        return
+      }
+
+      const result = await res.json()
+
+      if (result?.error) {
+        toast.show({
+          variant: "warning",
+          message: result.error,
+        })
+        return
+      }
+
+      if (result?.values?.optimized) {
+        const confirmed = await DialogOptimize.show(dialogCtx, {
+          original: originalPrompt,
+          optimized: result.values.optimized,
+        })
+        if (confirmed !== null) {
+          input.setText(confirmed)
+          setStore("prompt", { input: confirmed, parts: [] })
+          input.gotoBufferEnd()
+          toast.show({
+            variant: "success",
+            message: "Prompt optimized",
+          })
+        }
+      } else {
+        toast.show({
+          variant: "warning",
+          message: "No plugin handles this action",
+        })
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      toast.show({
+        variant: "error",
+        message: `Failed to optimize: ${message}`,
+      })
+    }
+  }
+
   command.register(() => [
+    {
+      title: "Optimize prompt",
+      value: "prompt.optimize",
+      category: "Prompt",
+      enabled: !!store.prompt.input,
+      onSelect: handleOptimize,
+    },
     {
       title: "Stash prompt",
       value: "prompt.stash",
@@ -853,6 +926,12 @@ export function Prompt(props: PromptProps) {
                   }
                   // If no image, let the default paste behavior continue
                 }
+                // Ctrl+Shift+O to optimize prompt
+                if (e.name === "o" && e.ctrl && e.shift && store.prompt.input !== "") {
+                  e.preventDefault()
+                  handleOptimize(dialog)
+                  return
+                }
                 if (keybind.match("input_clear", e) && store.prompt.input !== "") {
                   input.clear()
                   input.extmarks.clear()
@@ -1139,6 +1218,9 @@ export function Prompt(props: PromptProps) {
                   <text fg={theme.text}>
                     {keybind.print("command_list")} <span style={{ fg: theme.textMuted }}>commands</span>
                   </text>
+                  <box onMouseUp={() => handleOptimize(dialog)}>
+                    <text fg={theme.primary}>✨ optimize</text>
+                  </box>
                 </Match>
                 <Match when={store.mode === "shell"}>
                   <text fg={theme.text}>
