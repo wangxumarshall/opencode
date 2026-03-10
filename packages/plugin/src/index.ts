@@ -153,6 +153,39 @@ export interface Hooks {
   }
   auth?: AuthHook
   /**
+   * Called when user interacts with TUI (button, command, etc.)
+   * Allows plugins to handle UI interactions and return results for rendering
+   */
+  "tui.ui.interact"?: (
+    input: {
+      id: string
+      action: string
+      context?: {
+        prompt?: string
+        sessionID?: string
+      }
+    },
+    output: {
+      type?: "form" | "dialog"
+      title?: string
+      content?: string
+      fields?: Array<{
+        name: string
+        type: "text" | "textarea"
+        label?: string
+        default?: string
+      }>
+      actions?: Array<{
+        label: string
+        action: string
+        primary?: boolean
+      }>
+      values?: Record<string, any>
+      action?: string
+      cancelled?: boolean
+    },
+  ) => Promise<void>
+  /**
    * Called when a new message is received
    */
   "chat.message"?: (
