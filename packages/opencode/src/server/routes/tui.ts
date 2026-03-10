@@ -102,6 +102,57 @@ export const TuiRoutes = lazy(() =>
       },
     )
     .post(
+      "/ui-interact",
+      describeRoute({
+        summary: "TUI UI interact",
+        description: "Handle UI interaction from plugins",
+        operationId: "tui.uiInteract",
+        responses: {
+          200: {
+            description: "Interaction result",
+            content: {
+              "application/json": {
+                schema: resolver(z.any()),
+              },
+            },
+          },
+          ...errors(400),
+        },
+      }),
+      validator("json", TuiEvent.UiInteract.properties),
+      async (c) => {
+        const input = c.req.valid("json")
+        const { Plugin } = await import("@/plugin")
+
+        const safeOutput = {
+          values: {} as Record<string, any>,
+          action: "",
+          cancelled: false,
+        }
+
+        try {
+          const timeoutMs = 30000
+          const output = await Promise.race([
+            Plugin.trigger("tui.ui.interact", input, safeOutput),
+            new Promise<never>((_, reject) =>
+              setTimeout(() => reject(new Error("Plugin execution timeout")), timeoutMs),
+            ),
+          ])
+
+          const validatedOutput = {
+            values: typeof output?.values === "object" ? output.values : safeOutput.values,
+            action: typeof output?.action === "string" ? output.action : safeOutput.action,
+            cancelled: typeof output?.cancelled === "boolean" ? output.cancelled : safeOutput.cancelled,
+          }
+
+          return c.json(validatedOutput)
+        } catch (err) {
+          const message = err instanceof Error ? err.message : "Plugin execution failed"
+          return c.json({ error: message, cancelled: true }, 500)
+        }
+      },
+    )
+    .post(
       "/open-help",
       describeRoute({
         summary: "Open help dialog",
