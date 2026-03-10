@@ -127,6 +127,7 @@ export function Prompt(props: PromptProps) {
     extmarkToPartIndex: Map<number, number>
     interrupt: number
     placeholder: number
+    optimizing: boolean
   }>({
     placeholder: Math.floor(Math.random() * PLACEHOLDERS.length),
     prompt: {
@@ -136,6 +137,7 @@ export function Prompt(props: PromptProps) {
     mode: "normal",
     extmarkToPartIndex: new Map(),
     interrupt: 0,
+    optimizing: false,
   })
 
   createEffect(
@@ -472,20 +474,18 @@ export function Prompt(props: PromptProps) {
   }
 
   const handleOptimize = async (dialogCtx: any) => {
-    if (!store.prompt.input) return
+    if (!store.prompt.input || store.optimizing) return
     const originalPrompt = store.prompt.input
 
+    setStore("optimizing", true)
+
     try {
-      const res = await fetch(`${sdk.url}/tui/ui-interact`, {
+      const res = await fetch(`${sdk.url}/tui/optimize-prompt`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          id: "prompt-optimize",
-          action: "prompt.optimize",
-          context: {
-            prompt: store.prompt.input,
-            sessionID: props.sessionID,
-          },
+          prompt: store.prompt.input,
+          sessionID: props.sessionID,
         }),
       })
 
@@ -507,10 +507,10 @@ export function Prompt(props: PromptProps) {
         return
       }
 
-      if (result?.values?.optimized) {
+      if (result?.optimized) {
         const confirmed = await DialogOptimize.show(dialogCtx, {
           original: originalPrompt,
-          optimized: result.values.optimized,
+          optimized: result.optimized,
         })
         if (confirmed !== null) {
           input.setText(confirmed)
@@ -524,7 +524,7 @@ export function Prompt(props: PromptProps) {
       } else {
         toast.show({
           variant: "warning",
-          message: "No plugin handles this action",
+          message: "No optimization result returned",
         })
       }
     } catch (err) {
@@ -533,6 +533,8 @@ export function Prompt(props: PromptProps) {
         variant: "error",
         message: `Failed to optimize: ${message}`,
       })
+    } finally {
+      setStore("optimizing", false)
     }
   }
 
@@ -541,7 +543,7 @@ export function Prompt(props: PromptProps) {
       title: "Optimize prompt",
       value: "prompt.optimize",
       category: "Prompt",
-      enabled: !!store.prompt.input,
+      enabled: !!store.prompt.input && !store.optimizing,
       onSelect: handleOptimize,
     },
     {
@@ -927,7 +929,7 @@ export function Prompt(props: PromptProps) {
                   // If no image, let the default paste behavior continue
                 }
                 // Ctrl+Shift+O to optimize prompt
-                if (e.name === "o" && e.ctrl && e.shift && store.prompt.input !== "") {
+                if (e.name === "o" && e.ctrl && e.shift && store.prompt.input !== "" && !store.optimizing) {
                   e.preventDefault()
                   handleOptimize(dialog)
                   return
@@ -1218,8 +1220,10 @@ export function Prompt(props: PromptProps) {
                   <text fg={theme.text}>
                     {keybind.print("command_list")} <span style={{ fg: theme.textMuted }}>commands</span>
                   </text>
-                  <box onMouseUp={() => handleOptimize(dialog)}>
-                    <text fg={theme.primary}>✨ optimize</text>
+                  <box onMouseUp={() => !store.optimizing && handleOptimize(dialog)}>
+                    <text fg={store.optimizing ? theme.textMuted : theme.primary}>
+                      {store.optimizing ? "⏳ optimizing..." : "✨ optimize"}
+                    </text>
                   </box>
                 </Match>
                 <Match when={store.mode === "shell"}>
