@@ -554,6 +554,7 @@ export function Prompt(props: PromptProps) {
       value: "prompt.optimize",
       category: "Prompt",
       enabled: !!store.prompt.input && !store.optimizing,
+      slash: { name: "optimize" },
       onSelect: handleOptimize,
     },
     {
@@ -938,8 +939,8 @@ export function Prompt(props: PromptProps) {
                   }
                   // If no image, let the default paste behavior continue
                 }
-                // Ctrl+Shift+O to optimize prompt
-                if (e.name === "o" && e.ctrl && e.shift && store.prompt.input !== "" && !store.optimizing) {
+                // Ctrl+O to optimize prompt
+                if (e.name === "o" && e.ctrl && !e.shift && store.prompt.input !== "" && !store.optimizing) {
                   e.preventDefault()
                   handleOptimize(dialog)
                   return
