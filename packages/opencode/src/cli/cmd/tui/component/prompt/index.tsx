@@ -479,14 +479,20 @@ export function Prompt(props: PromptProps) {
 
     setStore("optimizing", true)
 
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 30000)
+
     try {
-      const res = await fetch(`${sdk.url}/tui/optimize-prompt`, {
+      const apiUrl = `${sdk.url}/tui/optimize-prompt`
+
+      const res = await sdk.fetch(apiUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           prompt: store.prompt.input,
           sessionID: props.sessionID,
         }),
+        signal: controller.signal,
       })
 
       if (!res.ok) {
@@ -528,12 +534,16 @@ export function Prompt(props: PromptProps) {
         })
       }
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
+      let message = "Unknown error"
+      if (err instanceof Error) {
+        message = err.name === "AbortError" ? "Request timed out (30s)" : err.message
+      }
       toast.show({
         variant: "error",
-        message: `Failed to optimize: ${message}`,
+        message: `Optimize failed: ${message.slice(0, 100)}`,
       })
     } finally {
+      clearTimeout(timeout)
       setStore("optimizing", false)
     }
   }

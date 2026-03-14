@@ -9,7 +9,6 @@ import { errors } from "../error"
 import { lazy } from "../../util/lazy"
 import { generateText } from "ai"
 import { Provider } from "@/provider/provider"
-import { MessageV2 } from "@/session/message-v2"
 import { Config } from "@/config/config"
 import { Auth } from "@/auth"
 
@@ -168,34 +167,71 @@ export const TuiRoutes = lazy(() =>
             description: "Optimized prompt",
             content: {
               "application/json": {
-                schema: resolver(z.object({
-                  original: z.string(),
-                  optimized: z.string(),
-                })),
+                schema: resolver(
+                  z.object({
+                    original: z.string(),
+                    optimized: z.string(),
+                  }),
+                ),
               },
             },
           },
           ...errors(400, 500),
         },
       }),
-      validator("json", z.object({
-        prompt: z.string(),
-        sessionID: z.string().optional(),
-      })),
+      validator(
+        "json",
+        z.object({
+          prompt: z.string(),
+          sessionID: z.string().optional(),
+        }),
+      ),
       async (c) => {
         const { prompt, sessionID } = c.req.valid("json")
 
         try {
           // Get small model for optimization
           const cfg = await Config.get()
-          const providerID = cfg.small_model?.split("/")[0] ?? "anthropic"
-          const model = await Provider.getSmallModel(providerID)
+          let model = undefined
+
+          // First try configured small_model
+          if (cfg.small_model) {
+            const parts = cfg.small_model.split("/")
+            const providerID = parts[0]
+            const modelID = parts.slice(1).join("/")
+            // Skip if github-copilot with PAT (requires OAuth)
+            if (providerID.includes("github-copilot")) {
+              const auth = await Auth.get(providerID)
+              if (auth?.type === "oauth") {
+                model = await Provider.getModel(providerID, modelID)
+              }
+            } else {
+              model = await Provider.getModel(providerID, modelID)
+            }
+          }
+
+          // If no configured model, try each configured provider to find an available small model
           if (!model) {
-            return c.json({ error: "No small model available for optimization" }, 500)
+            const providers = await Provider.list()
+            for (const provider of Object.values(providers)) {
+              // Skip github-copilot if using PAT (not OAuth)
+              if (provider.id.includes("github-copilot")) {
+                const auth = await Auth.get(provider.id)
+                if (!auth || auth.type !== "oauth") continue
+              }
+              const small = await Provider.getSmallModel(provider.id)
+              if (small) {
+                model = small
+                break
+              }
+            }
+          }
+
+          if (!model) {
+            return c.json({ error: "No model available. Please configure a provider first." }, 500)
           }
 
           const language = await Provider.getLanguage(model)
-          const auth = await Auth.get(model.providerID)
 
           // Build context from session messages if available
           let contextText = ""
@@ -204,11 +240,11 @@ export const TuiRoutes = lazy(() =>
             if (messages.length > 0) {
               const recentMessages = messages
                 .slice(-5)
-                .map(m => {
+                .map((m) => {
                   const role = m.info.role
                   const text = m.parts
-                    .filter(p => p.type === "text")
-                    .map(p => p.type === "text" ? p.text : "")
+                    .filter((p) => p.type === "text")
+                    .map((p) => (p.type === "text" ? p.text : ""))
                     .join("\n")
                     .slice(0, 500)
                   return `${role}: ${text}`
@@ -243,6 +279,7 @@ Return ONLY the optimized prompt, nothing else. Do not include any explanations 
             optimized,
           })
         } catch (err) {
+          console.error("Optimize prompt error:", err)
           const message = err instanceof Error ? err.message : "Failed to optimize prompt"
           return c.json({ error: message }, 500)
         }
