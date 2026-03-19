@@ -272,11 +272,6 @@ export const TuiRoutes = lazy(() =>
             return c.json({ error: "No model available. Please configure a provider first." }, 500)
           }
 
-          console.log("=== Optimize Model Selection ===")
-          console.log("Selected model:", model.id)
-          console.log("Provider:", model.providerID)
-          console.log("================================")
-
           const language = await Provider.getLanguage(model)
 
           // Build context from session messages if available
