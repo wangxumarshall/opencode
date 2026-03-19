@@ -7,8 +7,9 @@ import { TuiEvent } from "@/cli/cmd/tui/event"
 import { AsyncQueue } from "../../util/queue"
 import { errors } from "../error"
 import { lazy } from "../../util/lazy"
-import { generateText } from "ai"
+import { generateText, APICallError } from "ai"
 import { Provider } from "@/provider/provider"
+import { ProviderTransform } from "@/provider/transform"
 import { Config } from "@/config/config"
 import { Auth } from "@/auth"
 
@@ -190,38 +191,78 @@ export const TuiRoutes = lazy(() =>
         const { prompt, sessionID } = c.req.valid("json")
 
         try {
-          // Get small model for optimization
+          // Check if provider is usable (github-copilot requires OAuth)
+          const canUseProvider = async (providerID: string) => {
+            if (!providerID.includes("github-copilot")) return true
+            const auth = await Auth.get(providerID)
+            return auth?.type === "oauth"
+          }
+
+          // Get model for optimization - prefer session model, then configured model, fallback to default
           const cfg = await Config.get()
           let model = undefined
 
-          // First try configured small_model
-          if (cfg.small_model) {
-            const parts = cfg.small_model.split("/")
-            const providerID = parts[0]
-            const modelID = parts.slice(1).join("/")
-            // Skip if github-copilot with PAT (requires OAuth)
-            if (providerID.includes("github-copilot")) {
-              const auth = await Auth.get(providerID)
-              if (auth?.type === "oauth") {
-                model = await Provider.getModel(providerID, modelID)
+          // First: try to get the model used in the current session
+          if (sessionID) {
+            try {
+              const messages = await Session.messages({ sessionID, limit: 10 })
+              for (const msg of messages) {
+                if (msg.info.role === "user" && msg.info.model) {
+                  const modelInfo = msg.info.model
+                  if (await canUseProvider(modelInfo.providerID)) {
+                    model = await Provider.getModel(modelInfo.providerID, modelInfo.modelID)
+                    console.log("Using session model:", model.id, "from provider:", model.providerID)
+                    break
+                  }
+                }
               }
-            } else {
-              model = await Provider.getModel(providerID, modelID)
+            } catch (e) {
+              console.log("Failed to get session model:", e)
             }
           }
 
-          // If no configured model, try each configured provider to find an available small model
+          // Second: try configured model (user's main model)
+          if (!model && cfg.model) {
+            const parts = cfg.model.split("/")
+            const providerID = parts[0]
+            const modelID = parts.slice(1).join("/")
+            if (await canUseProvider(providerID)) {
+              model = await Provider.getModel(providerID, modelID)
+              console.log("Using configured model:", model.id)
+            }
+          }
+
+          // Third: try default model (includes recent model selection)
           if (!model) {
-            const providers = await Provider.list()
-            for (const provider of Object.values(providers)) {
-              // Skip github-copilot if using PAT (not OAuth)
-              if (provider.id.includes("github-copilot")) {
-                const auth = await Auth.get(provider.id)
-                if (!auth || auth.type !== "oauth") continue
+            try {
+              const defaultModel = await Provider.defaultModel()
+              if (await canUseProvider(defaultModel.providerID)) {
+                model = await Provider.getModel(defaultModel.providerID, defaultModel.modelID)
+                console.log("Using default model:", model.id)
               }
-              const small = await Provider.getSmallModel(provider.id)
-              if (small) {
-                model = small
+            } catch (e) {
+              // Ignore error if defaultModel fails
+            }
+          }
+
+          // Fourth: try configured small_model
+          if (!model && cfg.small_model) {
+            const parts = cfg.small_model.split("/")
+            const providerID = parts[0]
+            const modelID = parts.slice(1).join("/")
+            if (await canUseProvider(providerID)) {
+              model = await Provider.getModel(providerID, modelID)
+              console.log("Using small_model:", model.id)
+            }
+          }
+
+          // Fifth: find available small model from configured providers
+          if (!model) {
+            for (const provider of Object.values(await Provider.list())) {
+              if (!(await canUseProvider(provider.id))) continue
+              model = await Provider.getSmallModel(provider.id)
+              if (model) {
+                console.log("Using available small model:", model.id)
                 break
               }
             }
@@ -230,6 +271,11 @@ export const TuiRoutes = lazy(() =>
           if (!model) {
             return c.json({ error: "No model available. Please configure a provider first." }, 500)
           }
+
+          console.log("=== Optimize Model Selection ===")
+          console.log("Selected model:", model.id)
+          console.log("Provider:", model.providerID)
+          console.log("================================")
 
           const language = await Provider.getLanguage(model)
 
@@ -254,24 +300,37 @@ export const TuiRoutes = lazy(() =>
             }
           }
 
-          const systemPrompt = `You are a prompt optimization assistant. Your task is to improve user prompts to make them more effective, clear, and likely to get helpful responses.
+          const systemPrompt = `You are a helpful assistant. Your task is to rewrite user prompts to be more specific and actionable.
 
-Guidelines for optimization:
-1. Make the prompt more specific and clear
-2. Add relevant context that might be missing
-3. Structure the prompt logically (context → task → requirements)
-4. Keep the original intent intact
-5. Don't add unnecessary complexity
-6. If the prompt is already good, just make minor improvements
+You must respond with ONLY the rewritten prompt itself. Do not include any introductory text like "Here is the rewritten prompt" or "将 prompt 重写为...". Just output the rewritten prompt directly.
 
-Return ONLY the optimized prompt, nothing else. Do not include any explanations or markdown formatting.`
+Example:
+User: "fix bug"
+You: "Find and fix the bug in the code. Provide: 1) Bug description, 2) Root cause, 3) Fix with explanation, 4) Test steps."
 
-          const result = await generateText({
+Keep the same language as the input (Chinese → Chinese, English → English).`
+
+          const smallOptions = ProviderTransform.smallOptions(model)
+          
+          const containsChinese = /[\u4e00-\u9fa5]/.test(prompt)
+          const languageNote = containsChinese 
+            ? "IMPORTANT: The input is in Chinese, so the optimized prompt MUST also be in Chinese."
+            : "IMPORTANT: The input is in English, so the optimized prompt MUST also be in English."
+
+          const generateParams: any = {
             model: language,
             system: systemPrompt,
-            prompt: `Original prompt:${contextText}\n\n"${prompt}"\n\nOptimize this prompt:`,
-          })
+            prompt: `Rewrite this prompt: "${prompt}"${contextText}
 
+${languageNote}`,
+            providerOptions: ProviderTransform.providerOptions(model, {
+              ...smallOptions,
+              store: false
+            }),
+            maxRetries: 0,
+          }
+
+          const result = await generateText(generateParams)
           const optimized = result.text.trim()
 
           return c.json({
@@ -280,6 +339,26 @@ Return ONLY the optimized prompt, nothing else. Do not include any explanations 
           })
         } catch (err) {
           console.error("Optimize prompt error:", err)
+          
+          if (APICallError.isInstance(err)) {
+            const statusCode = err.statusCode || 500
+            const errorData = err.responseBody ? JSON.parse(err.responseBody) : {}
+            const errorMessage = errorData?.error?.message || err.message || "API call failed"
+            
+            if (statusCode === 429) {
+              return c.json({ 
+                error: "Rate limit exceeded. Please try again later.",
+                retryAfter: err.responseHeaders?.["retry-after"]
+              }, 429 as any)
+            }
+            
+            const httpStatus = statusCode >= 400 && statusCode < 600 ? statusCode : 500
+            return c.json({ 
+              error: errorMessage,
+              statusCode 
+            }, httpStatus as any)
+          }
+          
           const message = err instanceof Error ? err.message : "Failed to optimize prompt"
           return c.json({ error: message }, 500)
         }

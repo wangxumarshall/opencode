@@ -495,15 +495,27 @@ export function Prompt(props: PromptProps) {
         signal: controller.signal,
       })
 
-      if (!res.ok) {
+      const result = await res.json()
+
+      if (res.status === 429) {
+        const retryAfter = result.retryAfter
+        const message = retryAfter 
+          ? `Rate limit exceeded. Please try again in ${Math.ceil(parseInt(retryAfter) / 60)} minutes.`
+          : "Rate limit exceeded. Please try again later."
         toast.show({
-          variant: "error",
-          message: `Server error: ${res.status}`,
+          variant: "warning",
+          message,
         })
         return
       }
 
-      const result = await res.json()
+      if (!res.ok) {
+        toast.show({
+          variant: "error",
+          message: result?.error || `Server error: ${res.status}`,
+        })
+        return
+      }
 
       if (result?.error) {
         toast.show({
@@ -519,6 +531,9 @@ export function Prompt(props: PromptProps) {
           optimized: result.optimized,
         })
         if (confirmed !== null) {
+          if (!input || input.isDestroyed) {
+            return
+          }
           input.setText(confirmed)
           setStore("prompt", { input: confirmed, parts: [] })
           input.gotoBufferEnd()

@@ -85,16 +85,31 @@ DialogOptimize.show = (
   options: { original: string; optimized: string },
 ): Promise<string | null> => {
   return new Promise((resolve) => {
+    let resolved = false
     dialog.replace(
       () => (
         <DialogOptimize
           original={options.original}
           optimized={options.optimized}
-          onConfirm={(value) => resolve(value)}
-          onCancel={() => resolve(null)}
+          onConfirm={(value) => {
+            if (resolved) return
+            resolved = true
+            dialog.clear()
+            resolve(value)
+          }}
+          onCancel={() => {
+            if (resolved) return
+            resolved = true
+            dialog.clear()
+            resolve(null)
+          }}
         />
       ),
-      () => resolve(null),
+      () => {
+        if (resolved) return
+        resolved = true
+        resolve(null)
+      },
     )
   })
 }
